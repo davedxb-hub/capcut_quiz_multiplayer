@@ -157,7 +157,7 @@ input:focus{border-color:#111}
 <div id="sc-waiting" class="screen" style="justify-content:center">
   <div class="card slide-up" style="text-align:center">
     <div style="font-size:44px;margin-bottom:14px">⏳</div>
-    <h2>Waiting for Dave…🤷</h2>
+    <h2>Waiting for host…</h2>
     <p style="margin-bottom:20px">The quiz will start when the host presses Start</p>
     <div id="wait-list" style="margin-bottom:14px;text-align:left"></div>
     <p style="font-size:13px;color:var(--text2)">Joined as <strong id="wait-name" style="color:var(--text)"></strong></p>
@@ -168,7 +168,7 @@ input:focus{border-color:#111}
 <!-- ADMIN LOBBY -->
 <div id="sc-admin-lobby" class="screen" style="justify-content:center">
   <div class="card slide-up" style="max-width:520px">
-    <div class="tag">Admin Panel</div>
+    <div class="tag">👑 Admin Panel</div>
     <h2>Lobby</h2>
     <div class="row" style="margin-bottom:18px">
       <button class="btn btn-gold" style="flex:1;font-size:15px" onclick="adminStart()">▶ Start Quiz</button>
@@ -187,7 +187,7 @@ input:focus{border-color:#111}
     <div style="font-family:var(--font-head);font-size:32px;font-weight:900;color:#111;margin-bottom:4px" id="aa-timer">15:00</div>
     <p style="margin-bottom:14px;font-size:14px">Finished: <strong id="aa-done">0</strong> / <strong id="aa-total">0</strong></p>
     <div id="aa-lb" style="margin-bottom:16px"></div>
-    <button class="btn btn-gold btn-full" id="aa-podium-btn" style="display:none" onclick="triggerPodium()">🏆 Reveal Podium Now</button>
+    <button class="btn btn-gold btn-full" id="aa-podium-btn" onclick="triggerPodium()">🏆 Reveal Podium Now</button>
   </div>
 </div>
 
@@ -255,8 +255,13 @@ input:focus{border-color:#111}
     <div style="font-family:var(--font-head);font-size:62px;font-weight:900;color:#111;line-height:1;margin-bottom:4px" id="ps-score">0</div>
     <div style="font-size:14px;color:var(--text2);margin-bottom:22px">points</div>
     <div id="ps-details" style="margin-bottom:18px"></div>
-    <button class="btn btn-gold btn-full" onclick="goLeaderboard()">📊 View Leaderboard</button>
-    <p style="margin-top:12px;font-size:12px;color:var(--text2)">Podium reveals when host triggers it</p>
+    <button class="btn btn-gold btn-full" id="ps-lb-btn" onclick="goLeaderboard()" style="display:none">📊 View Leaderboard</button>
+    <div id="ps-wait-msg" style="display:none;padding:14px;background:var(--bg3);border-radius:12px;border:1px solid var(--border);text-align:center">
+      <div style="font-size:22px;margin-bottom:8px">⏳</div>
+      <div style="font-size:14px;font-weight:600;color:var(--text);margin-bottom:4px">Waiting for host to reveal results…</div>
+      <div style="font-size:12px;color:var(--text2)">Sit tight — the podium is coming!</div>
+    </div>
+    <p style="margin-top:12px;font-size:12px;color:var(--text2)" id="ps-hint"></p>
   </div>
 </div>
 
@@ -507,6 +512,7 @@ function resetLocalState() {
   tookUlt = false; ultResult = null;
   answers = new Array(10).fill(-1);
   forkDone = false; podiumOut = false; lbCd = 5;
+  _timerStart = null;
   timerBar(false);
 }
 
@@ -600,22 +606,22 @@ async function updateAdmin() {
       document.getElementById('aa-lb').innerHTML = valid.slice(0, 5)
         .map((p, i) => `<div class="lb-row"><div class="lb-rank">${i===0?'🥇':i===1?'🥈':i===2?'🥉':'#'+(i+1)}</div><div class="lb-name">${p.name}${p.finished?' <span style="color:var(--green);font-size:11px">✓</span>':''}</div><div class="lb-score">${p.score||0}</div></div>`)
         .join('');
-      if (st?.timer_start) {
-        const rem = Math.max(0, QUIZ_MS - (Date.now() - new Date(st.timer_start).getTime()));
+      if (_timerStart) {
+        const rem = Math.max(0, QUIZ_MS - (Date.now() - _timerStart));
         const m = Math.floor(rem / 60000), s = Math.floor((rem % 60000) / 1000);
         document.getElementById('aa-timer').textContent = `${m}:${s.toString().padStart(2, '0')}`;
       }
       const timeUp = st?.timer_start && (Date.now() - new Date(st.timer_start).getTime()) >= QUIZ_MS;
-      if (timeUp || (valid.length > 0 && done.length >= valid.length)) {
-        document.getElementById('aa-podium-btn').style.display = 'block';
-      }
+      // podium button always visible for admin
     }
   } catch (e) { console.error('updateAdmin error', e); }
 }
 
 async function adminStart() {
   clearInterval(_adminIv);
-  await setState({ status: 'active', timer_start: new Date().toISOString(), podium: false });
+  const now = new Date().toISOString();
+  await setState({ status: 'active', timer_start: now, podium: false });
+  _timerStart = new Date(now).getTime();
   show('admin-active'); timerBar(true); startTimerIv(); startAdminIv();
 }
 
@@ -628,13 +634,22 @@ async function adminReset() {
 }
 
 // ─── TIMER ───────────────────────────────────────────────────────────────────
-function startTimerIv() { clearInterval(_timerIv); updateTimerBar(); _timerIv = setInterval(updateTimerBar, 1000); }
+let _timerStart = null; // cached locally so we don't hit Supabase every tick
 
-async function updateTimerBar() {
+async function startTimerIv() {
+  clearInterval(_timerIv);
   try {
     const st = await getState();
-    if (!st?.timer_start) return;
-    const rem = Math.max(0, QUIZ_MS - (Date.now() - new Date(st.timer_start).getTime()));
+    if (st?.timer_start) _timerStart = new Date(st.timer_start).getTime();
+  } catch{}
+  updateTimerBar();
+  _timerIv = setInterval(updateTimerBar, 1000);
+}
+
+function updateTimerBar() {
+  try {
+    if (!_timerStart) return;
+    const rem = Math.max(0, QUIZ_MS - (Date.now() - _timerStart));
     const m = Math.floor(rem / 60000), s = Math.floor((rem % 60000) / 1000);
     const el = document.getElementById('t-display');
     el.textContent = `${m}:${s.toString().padStart(2, '0')}`;
@@ -649,6 +664,14 @@ async function updateTimerBar() {
 function startQuizFlow() {
   show('quiz');
   if (curQ >= QS.length) { finishQuiz(); return; }
+  // Listen for admin-forced podium reveal while player is still in quiz
+  subscribeRealtime(async st => {
+    if (st.podium && !podiumOut) {
+      clearInterval(_timerIv); timerBar(false);
+      await saveMe(true, new Date().toISOString());
+      startCountdown();
+    }
+  });
   renderQ(curQ);
 }
 
@@ -799,6 +822,14 @@ async function showScore() {
       <div style="display:flex;justify-content:space-between;padding:10px 14px;background:var(--bg3);border-radius:8px"><span style="color:var(--text2)">Best streak</span><strong>🔥 ${maxStreak}</strong></div>
       ${tookUlt ? `<div style="display:flex;justify-content:space-between;padding:10px 14px;background:${ultResult ? 'rgba(0,200,117,0.08)' : 'rgba(255,59,59,0.08)'};border-radius:8px;border:1px solid ${ultResult ? 'rgba(0,200,117,0.3)' : 'rgba(255,59,59,0.3)'}"><span style="color:var(--text2)">Ultimate</span><strong style="color:${ultResult ? 'var(--green)' : 'var(--red)'}">${ultResult ? '✓ DOUBLED' : '✗ HALVED'}</strong></div>` : ''}
     </div>`;
+  // Admin sees leaderboard button; participants wait for host to reveal podium
+  if (isAdmin) {
+    document.getElementById('ps-lb-btn').style.display = 'block';
+    document.getElementById('ps-wait-msg').style.display = 'none';
+  } else {
+    document.getElementById('ps-lb-btn').style.display = 'none';
+    document.getElementById('ps-wait-msg').style.display = 'block';
+  }
   pollPodium();
 }
 
